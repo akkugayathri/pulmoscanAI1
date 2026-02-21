@@ -85,17 +85,6 @@ export function ResultsDisplay() {
       transition={{ duration: 0.5 }}
       className="max-w-4xl mx-auto space-y-6"
     >
-      {/* Demo mode banner */}
-      {diagnosisResult.demoMode && (
-        <div className="flex items-start gap-3 p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm">
-          <Info className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
-          <span className="text-blue-700">
-            <strong>Demo mode:</strong> The AI model is not trained yet. Results are placeholder predictions.
-            Train the model with your dataset to get real AI predictions.
-          </span>
-        </div>
-      )}
-
       {/* Result Header */}
       <div className="medical-card text-center">
         <motion.div
