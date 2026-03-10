@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Brain, Activity, Scan, CheckCircle, AlertCircle } from 'lucide-react';
+import { Brain, Activity, Scan, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
 import { useDiagnosis } from '@/context/DiagnosisContext';
 import { submitDiagnosis } from '@/lib/api';
 import { DiagnosisResult, DiseaseClass } from '@/types/patient';
@@ -84,7 +84,13 @@ export function ProcessingAnimation() {
 
   const CurrentIcon = processingSteps[currentStep]?.icon ?? Brain;
 
+  // ── Error Screen ────────────────────────────────────────────────────────────
   if (error) {
+    const isInvalidXray = error.startsWith('INVALID_XRAY:');
+    const errorMessage  = isInvalidXray
+      ? error.replace('INVALID_XRAY:', '')
+      : error;
+
     return (
       <div className="min-h-[60vh] flex items-center justify-center px-4">
         <motion.div
@@ -92,14 +98,45 @@ export function ProcessingAnimation() {
           animate={{ opacity: 1, scale: 1 }}
           className="text-center max-w-md"
         >
-          <div className="w-20 h-20 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-6">
-            <AlertCircle className="w-10 h-10 text-destructive" />
+          {/* Icon — red X circle for invalid xray, alert for other errors */}
+          <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
+            isInvalidXray ? 'bg-orange-100' : 'bg-destructive/10'
+          }`}>
+            {isInvalidXray
+              ? <XCircle className="w-10 h-10 text-orange-500" />
+              : <AlertCircle className="w-10 h-10 text-destructive" />
+            }
           </div>
-          <h2 className="font-display text-xl font-bold mb-3">Analysis Failed</h2>
-          <p className="text-sm text-muted-foreground mb-4">{error}</p>
-          <p className="text-xs text-muted-foreground mb-6">
-            Make sure the Node.js backend (port 3001) and Python inference API (port 5001) are running.
+
+          {/* Title */}
+          <h2 className="font-display text-xl font-bold mb-3">
+            {isInvalidXray ? 'Invalid Image Uploaded' : 'Analysis Failed'}
+          </h2>
+
+          {/* Main message */}
+          <p className="text-sm text-muted-foreground mb-4">
+            {errorMessage}
           </p>
+
+          {/* Extra hint for invalid xray */}
+          {isInvalidXray && (
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 text-left">
+              <p className="text-xs text-orange-700 font-medium mb-1">Please make sure you upload:</p>
+              <ul className="text-xs text-orange-600 space-y-1 list-disc list-inside">
+                <li>A chest X-ray image (grayscale / black & white)</li>
+                <li>In JPEG or PNG format</li>
+                <li>Not a selfie, photo, or colored image</li>
+              </ul>
+            </div>
+          )}
+
+          {/* Extra hint for server errors */}
+          {!isInvalidXray && (
+            <p className="text-xs text-muted-foreground mb-6">
+              AI inference service may be unavailable. Please ensure the Python API is running.
+            </p>
+          )}
+
           <button
             onClick={() => navigate('/upload-scan')}
             className="px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium"
@@ -111,6 +148,7 @@ export function ProcessingAnimation() {
     );
   }
 
+  // ── Processing Screen ───────────────────────────────────────────────────────
   return (
     <div className="min-h-[60vh] flex items-center justify-center">
       <motion.div
