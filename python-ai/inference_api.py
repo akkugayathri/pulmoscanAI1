@@ -1,7 +1,7 @@
 """
 PulmoScan AI — Lightweight Flask Inference API
 Uses requests to call HuggingFace Inference API (no local model loading)
-Includes chest X-ray validation before inference
+Includes STRICT chest X-ray validation before inference
 """
 
 import os
@@ -60,16 +60,12 @@ CLINICAL = {
 }
 
 
-# ─── X-RAY VALIDATION ────────────────────────────────────────────────────────
+# ─── STRICT X-RAY VALIDATION ─────────────────────────────────────────────────
 
 def is_valid_chest_xray(image_bytes):
     """
-    Validates whether the uploaded image is likely a chest X-ray.
-    Uses heuristic checks based on:
-    1. Grayscale nature of X-rays
-    2. Pixel intensity distribution
-    3. Aspect ratio
-    4. Low color saturation
+    Strictly validates whether the uploaded image is likely a chest X-ray.
+    Rejects selfies, face photos, color images, and non-medical images.
 
     Returns: (bool, str) — (is_valid, reason_if_invalid)
     """
@@ -79,61 +75,77 @@ def is_valid_chest_xray(image_bytes):
 
         width, height = img.size
 
-        # ── Check 1: Aspect ratio (chest X-rays are roughly square to slightly wide) ──
+        # Check 1: Minimum image size
+        if width < 100 or height < 100:
+            return False, "Image resolution is too low for X-ray analysis"
+
+        # Check 2: Aspect ratio
         aspect_ratio = width / height
         if aspect_ratio < 0.5 or aspect_ratio > 2.0:
             logger.info(f"Validation failed: aspect ratio {aspect_ratio:.2f}")
             return False, "Image aspect ratio does not match chest X-ray format"
 
-        # ── Check 2: Color saturation (X-rays are grayscale — R≈G≈B) ──
-        r_channel = img_array[:, :, 0]
-        g_channel = img_array[:, :, 1]
-        b_channel = img_array[:, :, 2]
+        # Check 3: STRICT color channel difference (grayscale check)
+        # X-rays are grayscale so R, G, B channels are nearly identical
+        # Selfies and color photos have very different R/G/B channels
+        r = img_array[:, :, 0]
+        g = img_array[:, :, 1]
+        b = img_array[:, :, 2]
 
-        # Calculate mean difference between color channels
-        rg_diff = np.mean(np.abs(r_channel - g_channel))
-        rb_diff = np.mean(np.abs(r_channel - b_channel))
-        gb_diff = np.mean(np.abs(g_channel - b_channel))
+        rg_diff = np.mean(np.abs(r - g))
+        rb_diff = np.mean(np.abs(r - b))
+        gb_diff = np.mean(np.abs(g - b))
         avg_color_diff = (rg_diff + rb_diff + gb_diff) / 3
 
-        # If channels differ a lot, it's a colorful image (not an X-ray)
-        if avg_color_diff > 30:
+        # Strict threshold: 15 (was 30 before — selfies were passing at 30)
+        if avg_color_diff > 15:
             logger.info(f"Validation failed: color diff {avg_color_diff:.2f} (too colorful)")
             return False, "Image appears to be a color photograph, not an X-ray"
 
-        # ── Check 3: Pixel intensity distribution ──
-        # X-rays have mostly dark pixels with some bright regions (lungs)
-        gray = np.mean(img_array, axis=2)  # Convert to grayscale values
+        # Check 4: Per-pixel saturation check
+        max_channel = np.maximum(np.maximum(r, g), b)
+        min_channel = np.minimum(np.minimum(r, g), b)
+        avg_saturation = np.mean(max_channel - min_channel)
+
+        if avg_saturation > 20:
+            logger.info(f"Validation failed: saturation {avg_saturation:.2f}")
+            return False, "Image has too much color saturation for an X-ray"
+
+        # Check 5: Pixel intensity range
+        gray = np.mean(img_array, axis=2)
         mean_intensity = np.mean(gray)
         std_intensity  = np.std(gray)
 
-        # X-rays typically have mean intensity between 50-200 and good std deviation
         if mean_intensity < 20:
-            logger.info(f"Validation failed: image too dark (mean={mean_intensity:.1f})")
+            logger.info(f"Validation failed: too dark (mean={mean_intensity:.1f})")
             return False, "Image is too dark to be a valid chest X-ray"
 
         if mean_intensity > 240:
-            logger.info(f"Validation failed: image too bright (mean={mean_intensity:.1f})")
+            logger.info(f"Validation failed: too bright (mean={mean_intensity:.1f})")
             return False, "Image is too bright to be a valid chest X-ray"
 
         if std_intensity < 15:
             logger.info(f"Validation failed: low contrast (std={std_intensity:.1f})")
             return False, "Image has insufficient contrast for a chest X-ray"
 
-        # ── Check 4: Minimum image size ──
-        if width < 100 or height < 100:
-            return False, "Image resolution is too low for X-ray analysis"
-
-        # ── Check 5: Dark pixel ratio ──
-        # X-rays typically have 30-85% dark pixels (below intensity 128)
-        dark_pixel_ratio = np.sum(gray < 128) / gray.size
-        if dark_pixel_ratio < 0.15 or dark_pixel_ratio > 0.95:
-            logger.info(f"Validation failed: dark pixel ratio {dark_pixel_ratio:.2f}")
+        # Check 6: Dark pixel ratio
+        dark_ratio = np.sum(gray < 128) / gray.size
+        if dark_ratio < 0.15 or dark_ratio > 0.95:
+            logger.info(f"Validation failed: dark ratio {dark_ratio:.2f}")
             return False, "Pixel distribution does not match a chest X-ray pattern"
 
-        logger.info(f"Validation passed: color_diff={avg_color_diff:.1f}, "
-                    f"mean={mean_intensity:.1f}, std={std_intensity:.1f}, "
-                    f"dark_ratio={dark_pixel_ratio:.2f}")
+        # Check 7: Highlight pixel ratio
+        highlight_ratio = np.sum(gray > 240) / gray.size
+        if highlight_ratio > 0.25:
+            logger.info(f"Validation failed: highlight ratio {highlight_ratio:.2f}")
+            return False, "Too many bright pixels for a chest X-ray"
+
+        logger.info(
+            f"Validation PASSED — color_diff={avg_color_diff:.1f}, "
+            f"sat={avg_saturation:.1f}, mean={mean_intensity:.1f}, "
+            f"std={std_intensity:.1f}, dark={dark_ratio:.2f}, "
+            f"highlight={highlight_ratio:.2f}"
+        )
         return True, None
 
     except Exception as e:
@@ -225,7 +237,7 @@ def predict():
 
     image_bytes = file.read()
 
-    # ── STEP 1: Validate chest X-ray BEFORE running inference ──
+    # STEP 1: STRICT Validate chest X-ray BEFORE running inference
     is_valid, reason = is_valid_chest_xray(image_bytes)
     if not is_valid:
         logger.warning(f"Invalid X-ray rejected: {reason}")
@@ -235,7 +247,7 @@ def predict():
             "detail": reason
         }), 400
 
-    # ── STEP 2: Run AI inference only for valid X-rays ──
+    # STEP 2: Run AI inference only for valid X-rays
     try:
         hf_results    = call_hf_api(image_bytes)
         probabilities = map_to_three_classes(hf_results)
