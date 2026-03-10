@@ -2,7 +2,6 @@
  * PulmoScan AI — Frontend API Client
  * Connects to the Node.js backend (port 3001 by default)
  */
-
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export interface DiagnosisApiResult {
@@ -64,7 +63,11 @@ export async function submitDiagnosis(
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(err.error || `Server error ${response.status}`);
+    // Handle invalid X-ray specifically
+    if (response.status === 400 && err.status === 'invalid_input') {
+      throw new Error('INVALID_XRAY:' + (err.message || 'The uploaded image is not a valid chest X-ray. Please upload a proper lung X-ray image.'));
+    }
+    throw new Error(err.message || err.error || `Server error ${response.status}`);
   }
 
   return response.json();
