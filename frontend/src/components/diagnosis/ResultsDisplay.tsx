@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   AlertTriangle, CheckCircle, Download, RotateCcw,
-  Activity, TrendingUp, FileText, Shield, Info
+  Activity, TrendingUp, FileText, Shield
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDiagnosis } from '@/context/DiagnosisContext';
@@ -54,7 +54,6 @@ export function ResultsDisplay() {
         confidence:      diagnosisResult.confidence,
         severity:        diagnosisResult.severity,
         probabilities:   diagnosisResult.probabilities,
-        affectedRegions: diagnosisResult.affectedRegions,
         recommendations: diagnosisResult.recommendations,
         scanId:          diagnosisResult.scanId,
       },
@@ -162,27 +161,6 @@ export function ResultsDisplay() {
           })}
         </div>
       </div>
-
-      {/* Affected Regions */}
-      {diagnosisResult.affectedRegions.length > 0 && (
-        <div className="medical-card">
-          <h3 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
-            <Activity className="w-5 h-5 text-primary" />
-            Affected Regions
-          </h3>
-          <div className="grid sm:grid-cols-2 gap-3">
-            {diagnosisResult.affectedRegions.map((region, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 p-3 bg-destructive/5 border border-destructive/20 rounded-lg"
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-destructive flex-shrink-0" />
-                <span className="text-sm font-medium">{region}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Clinical Recommendations */}
       <div className="medical-card">
