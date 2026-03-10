@@ -9,7 +9,6 @@ import { DiagnosisResult, DiseaseClass } from '@/types/patient';
 const processingSteps = [
   { icon: Scan,        label: 'Preprocessing image…',    duration: 1200 },
   { icon: Brain,       label: 'Running AI analysis…',    duration: 2200 },
-  { icon: Activity,    label: 'Generating Grad-CAM…',    duration: 1200 },
   { icon: CheckCircle, label: 'Finalizing results…',     duration: 800  },
 ];
 
