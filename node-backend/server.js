@@ -1,17 +1,6 @@
 /**
  * PulmoScan AI — Node.js Backend
- *
- * Responsibilities:
- *  - Receive image uploads from the Angular/React frontend
- *  - Forward requests to the Python inference API
- *  - Persist results + patient history in MongoDB
- *  - Expose REST API consumed by the frontend
- *
- * Environment Variables (.env):
- *  PORT             = 3001
- *  MONGO_URI        = mongodb://localhost:27017/pulmoscan
- *  PYTHON_API_URL   = http://localhost:5001
- *  MAX_FILE_SIZE_MB = 10
+ * Updated: handles invalid X-ray response from Python API
  */
 
 require('dotenv').config();
@@ -54,10 +43,10 @@ const upload = multer({
   },
 });
 
-// ─── MongoDB Schemas ──────────────────────────────────────────────────────────
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
 mongoose.connect(MONGO_URI)
   .then(() => console.log(`[DB] Connected to MongoDB`))
-  .catch(err => console.warn(`[DB] MongoDB connection failed: ${err.message}\n      Running without persistence.`));
+  .catch(err => console.warn(`[DB] MongoDB connection failed: ${err.message}`));
 
 const patientSchema = new mongoose.Schema({
   scanId:            { type: String, default: uuidv4 },
@@ -83,7 +72,7 @@ const patientSchema = new mongoose.Schema({
   imageMeta: {
     originalName:    String,
     mimetype:        String,
-    sizeByes:        Number,
+    sizeBytes:       Number,
   },
   createdAt: { type: Date, default: Date.now },
 });
@@ -99,16 +88,14 @@ async function callPythonAPI(imageBuffer, originalname, mimetype) {
     headers: form.getHeaders(),
     timeout: 60_000,
     maxContentLength: 50 * 1024 * 1024,
+    // IMPORTANT: Don't throw on 4xx — let us handle invalid_xray manually
+    validateStatus: (status) => status < 500,
   });
-  return response.data;
+  return response;
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/health
- * Returns service health + downstream Python API status
- */
 app.get('/api/health', async (req, res) => {
   let pythonStatus = 'unknown';
   let pythonData   = null;
@@ -129,9 +116,8 @@ app.get('/api/health', async (req, res) => {
 
 /**
  * POST /api/diagnose
- * Body (multipart/form-data):
- *   image        - chest X-ray file
- *   patientData  - JSON string of patient details
+ * Main diagnosis endpoint
+ * Now handles invalid X-ray rejection from Python API
  */
 app.post('/api/diagnose', upload.single('image'), async (req, res) => {
   try {
@@ -150,18 +136,44 @@ app.post('/api/diagnose', upload.single('image'), async (req, res) => {
     }
 
     // Call Python inference API
-    let aiResult;
+    let pythonResponse;
     try {
-      aiResult = await callPythonAPI(req.file.buffer, req.file.originalname, req.file.mimetype);
+      pythonResponse = await callPythonAPI(
+        req.file.buffer,
+        req.file.originalname,
+        req.file.mimetype
+      );
     } catch (err) {
       console.error('[AI] Python API call failed:', err.message);
       return res.status(502).json({
-        error: 'AI inference service is unavailable. Please ensure the Python API is running.',
+        error: 'AI inference service is unavailable.',
         detail: err.message,
       });
     }
 
-    // Persist to MongoDB (non-blocking)
+    // ── Handle invalid X-ray response from Python ──────────────────────────
+    if (pythonResponse.status === 400 &&
+        pythonResponse.data?.error === 'invalid_xray') {
+      console.warn('[VALIDATE] Invalid X-ray image rejected');
+      // Do NOT save to MongoDB — return clean error to frontend
+      return res.status(400).json({
+        status: 'invalid_input',
+        message: 'The uploaded image is not a valid chest X-ray. Please upload a proper lung X-ray image.',
+        detail: pythonResponse.data?.detail || null,
+      });
+    }
+
+    // ── If any other 4xx error from Python ────────────────────────────────
+    if (pythonResponse.status >= 400) {
+      return res.status(502).json({
+        error: 'AI inference returned an error',
+        detail: pythonResponse.data,
+      });
+    }
+
+    const aiResult = pythonResponse.data;
+
+    // ── Save to MongoDB ONLY for valid X-ray predictions ──────────────────
     const scanId = uuidv4();
     try {
       await ScanRecord.create({
@@ -179,7 +191,7 @@ app.post('/api/diagnose', upload.single('image'), async (req, res) => {
         imageMeta: {
           originalName: req.file.originalname,
           mimetype:     req.file.mimetype,
-          sizeByes:     req.file.size,
+          sizeBytes:    req.file.size,
         },
       });
       console.log(`[DB] Saved scan ${scanId} for ${patient.fullName || 'anonymous'}`);
@@ -206,10 +218,6 @@ app.post('/api/diagnose', upload.single('image'), async (req, res) => {
   }
 });
 
-/**
- * GET /api/history
- * Query params: page, limit, class, dateFrom, dateTo
- */
 app.get('/api/history', async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page  || '1', 10));
@@ -218,18 +226,9 @@ app.get('/api/history', async (req, res) => {
 
     const filter = {};
     if (req.query.class) filter['result.predictedClass'] = req.query.class;
-    if (req.query.dateFrom || req.query.dateTo) {
-      filter.createdAt = {};
-      if (req.query.dateFrom) filter.createdAt.$gte = new Date(req.query.dateFrom);
-      if (req.query.dateTo)   filter.createdAt.$lte = new Date(req.query.dateTo);
-    }
 
     const [records, total] = await Promise.all([
-      ScanRecord.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      ScanRecord.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       ScanRecord.countDocuments(filter),
     ]);
 
@@ -239,10 +238,6 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
-/**
- * GET /api/analytics
- * Returns summary stats for the dashboard
- */
 app.get('/api/analytics', async (req, res) => {
   try {
     const [classDist, total, recent] = await Promise.all([
@@ -258,12 +253,12 @@ app.get('/api/analytics', async (req, res) => {
     ]);
 
     res.json({
-      totalScans:         total,
-      scansThisWeek:      recent,
-      classDistribution:  classDist.map(d => ({
+      totalScans:        total,
+      scansThisWeek:     recent,
+      classDistribution: classDist.map(d => ({
         class:         d._id,
         count:         d.count,
-        avgConfidence: Math.round(d.avgConfidence * 10000) / 100, // percentage
+        avgConfidence: Math.round(d.avgConfidence * 10000) / 100,
       })),
     });
   } catch (err) {
@@ -271,9 +266,6 @@ app.get('/api/analytics', async (req, res) => {
   }
 });
 
-/**
- * DELETE /api/history/:scanId
- */
 app.delete('/api/history/:scanId', async (req, res) => {
   try {
     await ScanRecord.deleteOne({ scanId: req.params.scanId });
@@ -290,7 +282,6 @@ function _inferSeverity(cls) {
   return 'Medium';
 }
 
-// ─── Error handler ────────────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: `File too large. Maximum is ${MAX_MB} MB.` });
@@ -299,7 +290,6 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: err.message });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 PulmoScan Node.js Backend`);
   console.log(`   Listening on  : http://localhost:${PORT}`);
