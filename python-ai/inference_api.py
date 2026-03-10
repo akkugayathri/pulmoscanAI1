@@ -1,6 +1,7 @@
 """
 PulmoScan AI — Lightweight Flask Inference API
 Uses requests to call HuggingFace Inference API (no local model loading)
+Includes chest X-ray validation before inference
 """
 
 import os
@@ -59,6 +60,89 @@ CLINICAL = {
 }
 
 
+# ─── X-RAY VALIDATION ────────────────────────────────────────────────────────
+
+def is_valid_chest_xray(image_bytes):
+    """
+    Validates whether the uploaded image is likely a chest X-ray.
+    Uses heuristic checks based on:
+    1. Grayscale nature of X-rays
+    2. Pixel intensity distribution
+    3. Aspect ratio
+    4. Low color saturation
+
+    Returns: (bool, str) — (is_valid, reason_if_invalid)
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img_array = np.array(img, dtype=np.float32)
+
+        width, height = img.size
+
+        # ── Check 1: Aspect ratio (chest X-rays are roughly square to slightly wide) ──
+        aspect_ratio = width / height
+        if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+            logger.info(f"Validation failed: aspect ratio {aspect_ratio:.2f}")
+            return False, "Image aspect ratio does not match chest X-ray format"
+
+        # ── Check 2: Color saturation (X-rays are grayscale — R≈G≈B) ──
+        r_channel = img_array[:, :, 0]
+        g_channel = img_array[:, :, 1]
+        b_channel = img_array[:, :, 2]
+
+        # Calculate mean difference between color channels
+        rg_diff = np.mean(np.abs(r_channel - g_channel))
+        rb_diff = np.mean(np.abs(r_channel - b_channel))
+        gb_diff = np.mean(np.abs(g_channel - b_channel))
+        avg_color_diff = (rg_diff + rb_diff + gb_diff) / 3
+
+        # If channels differ a lot, it's a colorful image (not an X-ray)
+        if avg_color_diff > 30:
+            logger.info(f"Validation failed: color diff {avg_color_diff:.2f} (too colorful)")
+            return False, "Image appears to be a color photograph, not an X-ray"
+
+        # ── Check 3: Pixel intensity distribution ──
+        # X-rays have mostly dark pixels with some bright regions (lungs)
+        gray = np.mean(img_array, axis=2)  # Convert to grayscale values
+        mean_intensity = np.mean(gray)
+        std_intensity  = np.std(gray)
+
+        # X-rays typically have mean intensity between 50-200 and good std deviation
+        if mean_intensity < 20:
+            logger.info(f"Validation failed: image too dark (mean={mean_intensity:.1f})")
+            return False, "Image is too dark to be a valid chest X-ray"
+
+        if mean_intensity > 240:
+            logger.info(f"Validation failed: image too bright (mean={mean_intensity:.1f})")
+            return False, "Image is too bright to be a valid chest X-ray"
+
+        if std_intensity < 15:
+            logger.info(f"Validation failed: low contrast (std={std_intensity:.1f})")
+            return False, "Image has insufficient contrast for a chest X-ray"
+
+        # ── Check 4: Minimum image size ──
+        if width < 100 or height < 100:
+            return False, "Image resolution is too low for X-ray analysis"
+
+        # ── Check 5: Dark pixel ratio ──
+        # X-rays typically have 30-85% dark pixels (below intensity 128)
+        dark_pixel_ratio = np.sum(gray < 128) / gray.size
+        if dark_pixel_ratio < 0.15 or dark_pixel_ratio > 0.95:
+            logger.info(f"Validation failed: dark pixel ratio {dark_pixel_ratio:.2f}")
+            return False, "Pixel distribution does not match a chest X-ray pattern"
+
+        logger.info(f"Validation passed: color_diff={avg_color_diff:.1f}, "
+                    f"mean={mean_intensity:.1f}, std={std_intensity:.1f}, "
+                    f"dark_ratio={dark_pixel_ratio:.2f}")
+        return True, None
+
+    except Exception as e:
+        logger.error(f"Validation error: {e}")
+        return False, "Could not process image for validation"
+
+
+# ─── HuggingFace API ──────────────────────────────────────────────────────────
+
 def call_hf_api(image_bytes):
     headers = {}
     if HF_TOKEN:
@@ -113,6 +197,8 @@ def demo_predict(image_bytes):
     return cls, conf, probabilities
 
 
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({
@@ -139,6 +225,17 @@ def predict():
 
     image_bytes = file.read()
 
+    # ── STEP 1: Validate chest X-ray BEFORE running inference ──
+    is_valid, reason = is_valid_chest_xray(image_bytes)
+    if not is_valid:
+        logger.warning(f"Invalid X-ray rejected: {reason}")
+        return jsonify({
+            "error": "invalid_xray",
+            "message": "Uploaded image is not a chest X-ray",
+            "detail": reason
+        }), 400
+
+    # ── STEP 2: Run AI inference only for valid X-rays ──
     try:
         hf_results    = call_hf_api(image_bytes)
         probabilities = map_to_three_classes(hf_results)
