@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowRight, User, Phone, Mail, Calendar, Stethoscope } from 'lucide-react';
+import { ArrowRight, User, Phone, Mail, Calendar, Stethoscope, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -30,56 +30,63 @@ const symptomOptions = [
   'Night sweats',
 ];
 
+const EMPTY_FORM: PatientData = {
+  fullName: '',
+  age: 0,
+  gender: 'male',
+  phone: '',
+  email: '',
+  symptoms: [],
+  otherSymptoms: '',
+  existingConditions: '',
+  consentGiven: false,
+};
+
 export function PatientForm() {
   const navigate = useNavigate();
-  const { setPatientData } = useDiagnosis();
+  const { setPatientData, savedFormDraft, saveFormDraft, clearFormDraft } = useDiagnosis();
 
-  const [formData, setFormData] = useState<PatientData>({
-    fullName: '',
-    age: 0,
-    gender: 'male',
-    phone: '',
-    email: '',
-    symptoms: [],
-    otherSymptoms: '',
-    existingConditions: '',
-    consentGiven: false,
+  // Load from draft if available
+  const [formData, setFormData] = useState<PatientData>(() => {
+    if (savedFormDraft) {
+      return { ...EMPTY_FORM, ...savedFormDraft };
+    }
+    return EMPTY_FORM;
   });
 
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [errors,        setErrors]        = useState<Record<string, string>>({});
+  const [draftSaved,    setDraftSaved]    = useState(false);
+  const [hasDraft,      setHasDraft]      = useState(!!savedFormDraft);
+
+  // Auto-save draft to localStorage as user types (debounced 800ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      // Only save if user has typed something meaningful
+      if (formData.fullName || formData.email || formData.phone) {
+        saveFormDraft(formData);
+        setDraftSaved(true);
+        setTimeout(() => setDraftSaved(false), 2000);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [formData]);
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
-
-    if (!formData.fullName.trim()) {
-      newErrors.fullName = 'Full name is required';
-    }
-
-    if (!formData.age || formData.age < 1 || formData.age > 120) {
-      newErrors.age = 'Please enter a valid age (1–120)';
-    }
-
-    if (!formData.phone.trim()) {
-      newErrors.phone = 'Phone number is required';
-    }
-
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
-    }
-
-    if (!formData.consentGiven) {
-      newErrors.consent = 'Consent is required to proceed';
-    }
-
+    if (!formData.fullName.trim())                        newErrors.fullName = 'Full name is required';
+    if (!formData.age || formData.age < 1 || formData.age > 120) newErrors.age = 'Please enter a valid age (1–120)';
+    if (!formData.phone.trim())                           newErrors.phone = 'Phone number is required';
+    if (!formData.email.trim())                           newErrors.email = 'Email is required';
+    if (!formData.consentGiven)                           newErrors.consent = 'Consent is required to proceed';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
     if (validateForm()) {
       setPatientData(formData);
+      clearFormDraft(); // Clear draft after successful submit
       toast.success('Patient details saved');
       navigate('/upload-scan');
     } else {
@@ -96,6 +103,13 @@ export function PatientForm() {
     }));
   };
 
+  const handleClearDraft = () => {
+    setFormData(EMPTY_FORM);
+    clearFormDraft();
+    setHasDraft(false);
+    toast.info('Form cleared');
+  };
+
   return (
     <motion.form
       initial={{ opacity: 0, y: 20 }}
@@ -110,6 +124,28 @@ export function PatientForm() {
           <p className="text-sm text-muted-foreground">
             Please provide accurate information for diagnosis
           </p>
+
+          {/* Draft restored banner */}
+          {hasDraft && (
+            <div className="mt-3 flex items-center justify-center gap-3 p-2 bg-primary/10 border border-primary/20 rounded-lg text-xs text-primary">
+              <Save className="w-3.5 h-3.5" />
+              <span>Draft restored from last session</span>
+              <button
+                type="button"
+                onClick={handleClearDraft}
+                className="underline text-muted-foreground hover:text-destructive"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
+          {/* Auto-save indicator */}
+          {draftSaved && (
+            <p className="mt-2 text-xs text-muted-foreground animate-pulse">
+              ✓ Draft saved
+            </p>
+          )}
         </div>
 
         {/* Personal Details */}
@@ -124,14 +160,10 @@ export function PatientForm() {
               id="fullName"
               placeholder="Enter full name"
               value={formData.fullName}
-              onChange={(e) =>
-                setFormData(prev => ({ ...prev, fullName: e.target.value }))
-              }
+              onChange={(e) => setFormData(prev => ({ ...prev, fullName: e.target.value }))}
               className={errors.fullName ? 'border-destructive' : ''}
             />
-            {errors.fullName && (
-              <p className="text-xs text-destructive">{errors.fullName}</p>
-            )}
+            {errors.fullName && <p className="text-xs text-destructive">{errors.fullName}</p>}
           </div>
 
           {/* Age */}
@@ -147,17 +179,10 @@ export function PatientForm() {
               max={120}
               placeholder="Enter age"
               value={formData.age || ''}
-              onChange={(e) =>
-                setFormData(prev => ({
-                  ...prev,
-                  age: parseInt(e.target.value) || 0,
-                }))
-              }
+              onChange={(e) => setFormData(prev => ({ ...prev, age: parseInt(e.target.value) || 0 }))}
               className={errors.age ? 'border-destructive' : ''}
             />
-            {errors.age && (
-              <p className="text-xs text-destructive">{errors.age}</p>
-            )}
+            {errors.age && <p className="text-xs text-destructive">{errors.age}</p>}
           </div>
 
           {/* Gender */}
@@ -191,14 +216,10 @@ export function PatientForm() {
               type="tel"
               placeholder="Enter phone number"
               value={formData.phone}
-              onChange={(e) =>
-                setFormData(prev => ({ ...prev, phone: e.target.value }))
-              }
+              onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
               className={errors.phone ? 'border-destructive' : ''}
             />
-            {errors.phone && (
-              <p className="text-xs text-destructive">{errors.phone}</p>
-            )}
+            {errors.phone && <p className="text-xs text-destructive">{errors.phone}</p>}
           </div>
 
           {/* Email */}
@@ -212,14 +233,10 @@ export function PatientForm() {
               type="email"
               placeholder="Enter email address"
               value={formData.email}
-              onChange={(e) =>
-                setFormData(prev => ({ ...prev, email: e.target.value }))
-              }
+              onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
               className={errors.email ? 'border-destructive' : ''}
             />
-            {errors.email && (
-              <p className="text-xs text-destructive">{errors.email}</p>
-            )}
+            {errors.email && <p className="text-xs text-destructive">{errors.email}</p>}
           </div>
         </div>
 
@@ -231,10 +248,7 @@ export function PatientForm() {
           </Label>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             {symptomOptions.map(symptom => (
-              <label
-                key={symptom}
-                className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer"
-              >
+              <label key={symptom} className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer">
                 <Checkbox
                   checked={formData.symptoms.includes(symptom)}
                   onCheckedChange={() => handleSymptomToggle(symptom)}
@@ -251,12 +265,7 @@ export function PatientForm() {
           <Textarea
             placeholder="Describe other symptoms (if any)"
             value={formData.otherSymptoms}
-            onChange={(e) =>
-              setFormData(prev => ({
-                ...prev,
-                otherSymptoms: e.target.value,
-              }))
-            }
+            onChange={(e) => setFormData(prev => ({ ...prev, otherSymptoms: e.target.value }))}
           />
         </div>
 
@@ -266,12 +275,7 @@ export function PatientForm() {
           <Textarea
             placeholder="Mention existing conditions or medications"
             value={formData.existingConditions}
-            onChange={(e) =>
-              setFormData(prev => ({
-                ...prev,
-                existingConditions: e.target.value,
-              }))
-            }
+            onChange={(e) => setFormData(prev => ({ ...prev, existingConditions: e.target.value }))}
           />
         </div>
 
@@ -281,19 +285,12 @@ export function PatientForm() {
             <Checkbox
               checked={formData.consentGiven}
               onCheckedChange={checked =>
-                setFormData(prev => ({
-                  ...prev,
-                  consentGiven: checked as boolean,
-                }))
+                setFormData(prev => ({ ...prev, consentGiven: checked as boolean }))
               }
             />
-            <span className="text-sm">
-              I consent to AI-assisted diagnostic analysis *
-            </span>
+            <span className="text-sm">I consent to AI-assisted diagnostic analysis *</span>
           </label>
-          {errors.consent && (
-            <p className="text-xs text-destructive mt-1">{errors.consent}</p>
-          )}
+          {errors.consent && <p className="text-xs text-destructive mt-1">{errors.consent}</p>}
         </div>
 
         <Button type="submit" size="lg" className="w-full gap-2">
