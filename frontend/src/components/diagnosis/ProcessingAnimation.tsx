@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Brain, Activity, Scan, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
+import { Brain, Scan, CheckCircle, AlertCircle, XCircle, RefreshCw } from 'lucide-react';
 import { useDiagnosis } from '@/context/DiagnosisContext';
 import { submitDiagnosis } from '@/lib/api';
 import { DiagnosisResult, DiseaseClass } from '@/types/patient';
@@ -18,6 +18,7 @@ export function ProcessingAnimation() {
   const [currentStep, setCurrentStep] = useState(0);
   const [progress,    setProgress]    = useState(0);
   const [error,       setError]       = useState<string | null>(null);
+  const [retryCount,  setRetryCount]  = useState(0);
   const calledRef = useRef(false);
 
   useEffect(() => {
@@ -27,6 +28,10 @@ export function ProcessingAnimation() {
   useEffect(() => {
     if (!scanData || calledRef.current) return;
     calledRef.current = true;
+
+    setProgress(0);
+    setCurrentStep(0);
+    setError(null);
 
     const totalDuration = processingSteps.reduce((a, s) => a + s.duration, 0);
     let elapsed = 0;
@@ -80,11 +85,20 @@ export function ProcessingAnimation() {
       clearInterval(progressInterval);
       stepTimers.forEach(clearTimeout);
     };
-  }, [scanData, patientData, navigate, setDiagnosisResult]);
+  }, [scanData, patientData, navigate, setDiagnosisResult, retryCount]);
+
+  // ── Retry handler — re-runs analysis without going back to start ────────────
+  const handleRetry = () => {
+    calledRef.current = false;
+    setError(null);
+    setProgress(0);
+    setCurrentStep(0);
+    setRetryCount(c => c + 1);
+  };
 
   const CurrentIcon = processingSteps[currentStep]?.icon ?? Brain;
 
-  // ── Error Screen ────────────────────────────────────────────────────────────
+  // ── Error Screen ─────────────────────────────────────────────────────────────
   if (error) {
     const isInvalidXray = error.startsWith('INVALID_XRAY:');
     const errorMessage  = isInvalidXray
@@ -98,7 +112,7 @@ export function ProcessingAnimation() {
           animate={{ opacity: 1, scale: 1 }}
           className="text-center max-w-md"
         >
-          {/* Icon — red X circle for invalid xray, alert for other errors */}
+          {/* Icon */}
           <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
             isInvalidXray ? 'bg-orange-100' : 'bg-destructive/10'
           }`}>
@@ -113,12 +127,10 @@ export function ProcessingAnimation() {
             {isInvalidXray ? 'Invalid Image Uploaded' : 'Analysis Failed'}
           </h2>
 
-          {/* Main message */}
-          <p className="text-sm text-muted-foreground mb-4">
-            {errorMessage}
-          </p>
+          {/* Message */}
+          <p className="text-sm text-muted-foreground mb-4">{errorMessage}</p>
 
-          {/* Extra hint for invalid xray */}
+          {/* Invalid X-ray hint */}
           {isInvalidXray && (
             <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 text-left">
               <p className="text-xs text-orange-700 font-medium mb-1">Please make sure you upload:</p>
@@ -130,25 +142,48 @@ export function ProcessingAnimation() {
             </div>
           )}
 
-          {/* Extra hint for server errors */}
+          {/* Server error hint */}
           {!isInvalidXray && (
-            <p className="text-xs text-muted-foreground mb-6">
-              AI inference service may be unavailable. Please ensure the Python API is running.
+            <p className="text-xs text-muted-foreground mb-4">
+              AI inference service may be unavailable. Please try again.
             </p>
           )}
 
-          <button
-            onClick={() => navigate('/upload-scan')}
-            className="px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium"
-          >
-            Try Again
-          </button>
+          {/* Buttons */}
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            {/* Retry — only for server errors, not invalid image */}
+            {!isInvalidXray && (
+              <button
+                onClick={handleRetry}
+                className="flex items-center justify-center gap-2 px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Retry Analysis
+              </button>
+            )}
+
+            {/* Go back to upload for invalid xray */}
+            <button
+              onClick={() => navigate('/upload-scan')}
+              className="px-5 py-2 rounded-lg border border-border text-sm font-medium hover:bg-secondary"
+            >
+              {isInvalidXray ? 'Upload Different Image' : 'Change Image'}
+            </button>
+
+            {/* Go all the way back to start */}
+            <button
+              onClick={() => navigate('/patient-details')}
+              className="px-5 py-2 rounded-lg border border-border text-sm font-medium hover:bg-secondary text-muted-foreground"
+            >
+              Start Over
+            </button>
+          </div>
         </motion.div>
       </div>
     );
   }
 
-  // ── Processing Screen ───────────────────────────────────────────────────────
+  // ── Processing Screen ─────────────────────────────────────────────────────────
   return (
     <div className="min-h-[60vh] flex items-center justify-center">
       <motion.div
@@ -189,7 +224,7 @@ export function ProcessingAnimation() {
         </motion.h2>
 
         <p className="text-sm text-muted-foreground mb-6">
-          EfficientNetB0 deep-learning model · Grad-CAM visualization
+          Vision Transformer AI model · HuggingFace Inference API
         </p>
 
         <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
